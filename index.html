@@ -58,15 +58,17 @@ input[type=range]{width:100%;padding:0}
 </div>
 
 <div class="card">
-<h2>3 · Subtítulos con IA</h2>
-<p class="mu" style="margin:0 0 8px">Pega lo que se dice: puede ser la transcripción de YouTube con tiempos (<code>0:12</code> + texto) o simplemente el texto en líneas; sin tiempos, lo reparto en partes iguales sobre el clip.</p>
-<textarea id="tr" placeholder="0:12&#10;hola a todos bienvenidos&#10;0:15&#10;hoy vamos a hablar de..."></textarea>
-<div class="row" style="margin:10px 0">
-<select id="sty"><option value="s1">Amarillo viral</option><option value="s2">Neón</option><option value="s3">Caja negra</option></select>
-<input id="key" type="password" placeholder="Clave API de Anthropic (opcional)" style="flex:1;min-width:220px" autocomplete="off">
+<h2>3 · Subtítulos automáticos con IA</h2>
+<p class="mu" style="margin:0 0 10px">La IA escucha la voz del clip y escribe los subtítulos con sus tiempos. Corre en tu navegador; la primera vez descarga el modelo de voz (necesita internet).</p>
+<div class="g" style="margin-bottom:10px">
+<div><label>Idioma del video</label><select id="lang"><option value="spanish">Español</option><option value="english">English</option><option value="portuguese">Português</option><option value="french">Français</option><option value="">Detectar solo</option></select></div>
+<div><label>Calidad de voz</label><select id="model"><option value="Xenova/whisper-tiny">Rápida (~40 MB)</option><option value="Xenova/whisper-base" selected>Buena (~80 MB)</option><option value="Xenova/whisper-small">Mejor (~250 MB)</option></select></div>
+<div><label>Estilo</label><select id="sty"><option value="s1">Amarillo viral</option><option value="s2">Neón</option><option value="s3">Caja negra</option></select></div>
 </div>
-<p class="mu" style="margin:0 0 10px">Con clave, la IA reescribe cada línea corta y llamativa. Sin clave, uso el texto original con la palabra clave resaltada. La clave solo vive en esta pestaña; nunca la escribas dentro del archivo si lo vas a publicar.</p>
-<div class="row"><button class="p" id="gen">✨ Generar subtítulos</button><button id="srt">Descargar .srt</button></div>
+<input id="key" type="password" placeholder="Clave API de Anthropic (opcional)" style="width:100%" autocomplete="off">
+<p class="mu" style="margin:6px 0 10px">Opcional: con clave, Claude reescribe cada frase corta y llamativa. Sin clave, parto la frase en trozos de 4 palabras con la palabra clave resaltada. Nunca escribas la clave dentro del archivo si lo vas a publicar.</p>
+<details style="margin-bottom:10px"><summary class="mu">¿Prefieres pegar tú el texto? (opcional)</summary><textarea id="tr" placeholder="0:12&#10;hola a todos&#10;0:15&#10;hoy vamos a hablar de..." style="margin-top:8px"></textarea></details>
+<div class="row"><button class="p" id="gen">🎙 Detectar voz y generar subtítulos</button><button id="srt">Descargar .srt</button></div>
 </div>
 
 <div class="card">
@@ -79,7 +81,7 @@ input[type=range]{width:100%;padding:0}
 <video id="v" playsinline preload="auto" style="display:none"></video>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),cv=$('cv'),x=cv.getContext('2d');
-let W=1280,H=720,vert=false,cues=[],prev=false,exporting=false,REC=null,AC=null,SRC=null,DST=null,GN=null,loaded=false;
+let W=1280,H=720,vert=false,cues=[],prev=false,exporting=false,REC=null,FILE=null,ASR=null,ASRm='',AC=null,SRC=null,DST=null,GN=null,loaded=false;
 const HL={s1:'#ffe600',s2:'#ff3df2',s3:'#9dff3a'};
 const toS=t=>String(t).trim().split(':').reduce((a,b)=>a*60+(+b||0),0);
 const fmt=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),z=s%60;return(h?h+':'+String(m).padStart(2,'0'):m)+':'+String(z).padStart(2,'0')};
@@ -88,7 +90,7 @@ const range=()=>[toS($('a').value),toS($('b').value)];
 const seek=t=>new Promise(r=>{if(Math.abs(v.currentTime-t)<.02)return r();v.onseeked=()=>{v.onseeked=null;r()};v.currentTime=t});
 
 $('file').onchange=e=>{
-  const f=e.target.files[0];if(!f)return;
+  const f=e.target.files[0];if(!f)return;FILE=f;
   v.src=URL.createObjectURL(f);cues=[];loaded=false;
   say('Cargando…');
 };
@@ -159,9 +161,36 @@ function parseTr(txt){
   }
   return out;
 }
-function catchy(s){
-  const w=s.split(/\s+/).slice(0,8);let bi=0;w.forEach((z,i)=>{if(z.length>w[bi].length)bi=i});
-  if(w[bi]&&w[bi].length>3)w[bi]='*'+w[bi]+'*';return w.join(' ');
+function hlong(z){let bi=0;z.forEach((q,i)=>{if(q.length>z[bi].length)bi=i});const o=z.slice();if(o[bi].length>3)o[bi]='*'+o[bi]+'*';return o.join(' ')}
+function splitSeg(s){
+  const w=s.x.split(/\s+/).filter(Boolean),g=[];
+  for(let i=0;i<w.length;i+=4)g.push(w.slice(i,i+4));
+  const tot=g.reduce((n,z)=>n+z.join(' ').length,0)||1;let t=s.t;
+  return g.map(z=>{const d=(s.e-s.t)*z.join(' ').length/tot,c={t,e:t+d,x:hlong(z)};t+=d;return c});
+}
+async function getAudio(a,b){
+  const buf=await FILE.arrayBuffer(),ac=new AudioContext({sampleRate:16000});
+  let ab;try{ab=await ac.decodeAudioData(buf)}catch(e){ac.close();throw new Error('No pude leer el audio de este archivo (¿muy pesado o sin audio?). Prueba con un mp4 más ligero.')}
+  ac.close();
+  const r=ab.sampleRate,i0=Math.floor(a*r),i1=Math.min(ab.length,Math.floor(b*r)),n=ab.numberOfChannels,out=new Float32Array(Math.max(0,i1-i0));
+  for(let c=0;c<n;c++){const d=ab.getChannelData(c);for(let i=0;i<out.length;i++)out[i]+=d[i0+i]/n}
+  return out;
+}
+async function transcribe(a,b){
+  const m=$('model').value;
+  if(!ASR||ASRm!==m){
+    say('Cargando el motor de voz…');
+    let lib;try{lib=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3')}catch(e){throw new Error('No pude cargar el motor de voz. Necesitas internet y abrir la página por https o localhost.')}
+    ASR=await lib.pipeline('automatic-speech-recognition',m,{progress_callback:p=>{if(p.status==='progress'&&p.progress)say('Descargando modelo de voz… '+Math.round(p.progress)+'%')}});ASRm=m;
+  }
+  say('Leyendo el audio del clip…');
+  const audio=await getAudio(a,b);
+  if(!audio.length)throw new Error('No hay audio en ese tramo.');
+  say('Escuchando y transcribiendo… puede tardar un poco.');
+  const L=$('lang').value;
+  const r=await ASR(audio,{return_timestamps:true,chunk_length_s:30,stride_length_s:5,task:'transcribe',...(L?{language:L}:{})});
+  const ch=r.chunks||[{text:r.text,timestamp:[0,b-a]}];
+  return ch.map(c=>({t:a+(c.timestamp[0]||0),e:Math.min(b,a+(c.timestamp[1]==null?b-a:c.timestamp[1])),x:c.text.trim()})).filter(z=>z.x&&!/^[\[(].*[\])]$/.test(z.x));
 }
 async function aiRewrite(lines){
   const key=$('key').value.trim();if(!key)return null;
@@ -174,17 +203,20 @@ async function aiRewrite(lines){
 $('gen').onclick=async()=>{
   if(!loaded)return say('Primero sube un video.');
   const[a,b]=range();if(!(b>a))return say('El fin debe ser mayor que el inicio.');
-  const txt=$('tr').value;let segs=parseTr(txt).filter(s=>s.t>=a-1&&s.t<b);
-  if(!segs.length){
-    const L=txt.split(/\n/).map(s=>s.trim()).filter(z=>z&&!/^\d{1,2}(:\d{2}){1,2}$/.test(z));
-    if(!L.length)return say('Pega el texto de lo que se dice en el clip.');
-    segs=L.map((z,i)=>({t:a+i*(b-a)/L.length,x:z}));
-  }
-  $('gen').disabled=true;say('Generando subtítulos…');
-  let out=null;
-  try{out=await aiRewrite(segs.map(s=>s.x))}catch(e){say('No pude usar la IA ('+e.message+'). Uso el texto original.')}
-  cues=segs.map((s,i)=>({t:Math.max(s.t,a),e:segs[i+1]?segs[i+1].t:b,x:out?out[i]:catchy(s.x)}));
-  if(out)say('Listo: '+cues.length+' subtítulos con IA. Pulsa «Previsualizar clip».');else if(!$('key').value.trim())say('Listo: '+cues.length+' subtítulos (sin IA, texto original).');
+  $('gen').disabled=true;
+  try{
+    const txt=$('tr').value.trim();let segs;
+    if(txt){
+      segs=parseTr(txt).filter(z=>z.t>=a-1&&z.t<b);
+      if(!segs.length){const L=txt.split(/\n/).map(z=>z.trim()).filter(z=>z&&!/^\d{1,2}(:\d{2}){1,2}$/.test(z)),d=(b-a)/(L.length||1);segs=L.map((z,i)=>({t:a+i*d,x:z}))}
+      segs.forEach((z,i)=>{z.t=Math.max(z.t,a);z.e=segs[i+1]?segs[i+1].t:b});
+    }else segs=await transcribe(a,b);
+    if(!segs.length){say('No detecté voz en ese tramo.');return}
+    let out=null;say('Creando subtítulos llamativos…');
+    try{out=await aiRewrite(segs.map(z=>z.x))}catch(e){say('Claude no respondió ('+e.message+'); uso el texto tal cual.')}
+    cues=out?segs.map((z,i)=>({t:z.t,e:z.e,x:out[i]})):segs.flatMap(splitSeg);
+    say('Listo: '+cues.length+' subtítulos'+(out?' reescritos por Claude':'')+'. Pulsa «Previsualizar clip».');
+  }catch(e){say('Error: '+e.message)}
   $('gen').disabled=false;
 };
 const ts=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60),z=Math.floor(s%60);return[h,m,z].map(n=>String(n).padStart(2,'0')).join(':')+','+String(Math.round(s%1*1000)).padStart(3,'0')};
