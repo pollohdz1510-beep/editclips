@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipMaker Pro — clips con subtítulos IA</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--tx:#1b1b1f;--mu:#6b6b76;--bd:#e3e1dc;--ac:#ff3d5a}
+@media (prefers-color-scheme:dark){:root{--bg:#111114;--card:#1b1b20;--tx:#f2f2f5;--mu:#9a9aa6;--bd:#2c2c34}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:900px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:24px;margin:0 0 4px}h1 span{color:var(--ac)}
+h2{font-size:16px;margin:0 0 10px}
+.s,.mu{color:var(--mu);font-size:13px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,textarea,select{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:9px 11px}
+textarea{width:100%;min-height:110px;resize:vertical}
+button,.btn{font:inherit;font-weight:600;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:10px;padding:9px 13px;cursor:pointer;text-decoration:none;display:inline-block}
+.p{background:var(--ac)!important;border-color:var(--ac)!important;color:#fff!important}
+button:disabled{opacity:.5}
+canvas{width:100%;max-height:70vh;object-fit:contain;background:#000;border-radius:12px;display:block}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end}
+.g div{display:flex;flex-direction:column;gap:4px}
+label{font-size:13px;color:var(--mu)}
+input[type=range]{width:100%;padding:0}
+#msg{min-height:20px;font-size:13px;color:var(--mu);margin-top:8px}
+#out{width:100%;max-height:60vh;border-radius:12px;margin-top:10px;background:#000}
+</style>
+</head>
+<body>
+<main>
+<h1>Clip<span>Maker</span> Pro 🎬</h1>
+<p class="s">Sube tu video, elige el clip y exporta un video nuevo con subtítulos llamativos. Todo se procesa en tu navegador.</p>
+
+<div class="card">
+<h2>1 · Sube tu video</h2>
+<div class="row"><input type="file" id="file" accept="video/*"><select id="fmt"><option value="o">Formato original</option><option value="v">Vertical 9:16 (TikTok / Reels)</option></select></div>
+<div id="msg"></div>
+</div>
+
+<div class="card">
+<canvas id="cv" width="1280" height="720"></canvas>
+<input type="range" id="sl" min="0" max="1" step="0.05" value="0" style="margin-top:10px">
+<div class="row"><button id="pp">▶ / ⏸</button><span class="mu" id="now">0:00</span></div>
+</div>
+
+<div class="card">
+<h2>2 · Elige el clip</h2>
+<div class="g">
+<div><label>Inicio (m:ss)</label><input id="a" value="0:00"></div>
+<div><label>Fin (m:ss)</label><input id="b" value="0:30"></div>
+<button id="ma">Marcar inicio aquí</button>
+<button id="mb">Marcar fin aquí</button>
+</div>
+<div class="row" style="margin-top:10px"><button id="pv">▶ Previsualizar clip</button><button id="st">⏹ Detener</button></div>
+</div>
+
+<div class="card">
+<h2>3 · Subtítulos con IA</h2>
+<p class="mu" style="margin:0 0 8px">Pega lo que se dice: puede ser la transcripción de YouTube con tiempos (<code>0:12</code> + texto) o simplemente el texto en líneas; sin tiempos, lo reparto en partes iguales sobre el clip.</p>
+<textarea id="tr" placeholder="0:12&#10;hola a todos bienvenidos&#10;0:15&#10;hoy vamos a hablar de..."></textarea>
+<div class="row" style="margin:10px 0">
+<select id="sty"><option value="s1">Amarillo viral</option><option value="s2">Neón</option><option value="s3">Caja negra</option></select>
+<input id="key" type="password" placeholder="Clave API de Anthropic (opcional)" style="flex:1;min-width:220px" autocomplete="off">
+</div>
+<p class="mu" style="margin:0 0 10px">Con clave, la IA reescribe cada línea corta y llamativa. Sin clave, uso el texto original con la palabra clave resaltada. La clave solo vive en esta pestaña; nunca la escribas dentro del archivo si lo vas a publicar.</p>
+<div class="row"><button class="p" id="gen">✨ Generar subtítulos</button><button id="srt">Descargar .srt</button></div>
+</div>
+
+<div class="card">
+<h2>4 · Exportar</h2>
+<div class="row"><button class="p" id="exp">🎞 Exportar clip con subtítulos</button><a class="btn p" id="dlk" hidden>⬇ Descargar video</a></div>
+<p class="mu" style="margin:8px 0 0">La grabación dura lo mismo que el clip. Deja esta pestaña abierta y visible mientras termina.</p>
+<video id="out" controls hidden playsinline></video>
+</div>
+</main>
+<video id="v" playsinline preload="auto" style="display:none"></video>
+<script>
+const $=id=>document.getElementById(id),v=$('v'),cv=$('cv'),x=cv.getContext('2d');
+let W=1280,H=720,vert=false,cues=[],prev=false,exporting=false,REC=null,AC=null,SRC=null,DST=null,GN=null,loaded=false;
+const HL={s1:'#ffe600',s2:'#ff3df2',s3:'#9dff3a'};
+const toS=t=>String(t).trim().split(':').reduce((a,b)=>a*60+(+b||0),0);
+const fmt=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),z=s%60;return(h?h+':'+String(m).padStart(2,'0'):m)+':'+String(z).padStart(2,'0')};
+const say=t=>$('msg').textContent=t;
+const range=()=>[toS($('a').value),toS($('b').value)];
+const seek=t=>new Promise(r=>{if(Math.abs(v.currentTime-t)<.02)return r();v.onseeked=()=>{v.onseeked=null;r()};v.currentTime=t});
+
+$('file').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  v.src=URL.createObjectURL(f);cues=[];loaded=false;
+  say('Cargando…');
+};
+v.onerror=()=>say('Tu navegador no puede leer este formato. Prueba con un mp4 (H.264).');
+v.onloadedmetadata=()=>{
+  loaded=true;$('sl').max=v.duration;$('a').value='0:00';$('b').value=fmt(Math.min(30,v.duration));
+  setCanvas();say('Video listo ('+fmt(v.duration)+'). Elige inicio y fin del clip.');
+};
+function setCanvas(){
+  vert=$('fmt').value==='v';const vw=v.videoWidth||1280,vh=v.videoHeight||720;
+  if(vert){W=720;H=1280}else{const s=Math.min(1,1280/vw);W=Math.round(vw*s/2)*2;H=Math.round(vh*s/2)*2}
+  cv.width=W;cv.height=H;
+}
+$('fmt').onchange=setCanvas;
+$('pp').onclick=()=>{if(!loaded)return;prev=false;v.paused?v.play():v.pause()};
+$('sl').oninput=e=>{v.currentTime=+e.target.value};
+$('ma').onclick=()=>$('a').value=fmt(v.currentTime);
+$('mb').onclick=()=>$('b').value=fmt(v.currentTime);
+$('pv').onclick=()=>{if(!loaded)return say('Primero sube un video.');const[a]=range();prev=true;v.currentTime=a;v.play()};
+$('st').onclick=()=>{prev=false;v.pause()};
+
+function drawCap(c,t){
+  const st=$('sty').value,fs=Math.round(W*(vert?.085:.055));
+  x.font='900 '+fs+'px Impact,"Arial Black",Arial,sans-serif';x.textAlign='left';x.textBaseline='middle';
+  const words=[];let hl=false;
+  c.x.split(/\s+/).forEach(w=>{if(w[0]==='*')hl=true;const s=w.replace(/\*/g,'').toUpperCase();if(s)words.push({s,h:hl});if(w.length>1&&w.endsWith('*'))hl=false});
+  const sp=x.measureText(' ').width,maxW=W*.88,lines=[];let ln=[],lw=0;
+  words.forEach(w=>{w.w=x.measureText(w.s).width;if(ln.length&&lw+sp+w.w>maxW){lines.push({ln,lw});ln=[];lw=0}lw+=(ln.length?sp:0)+w.w;ln.push(w)});
+  if(ln.length)lines.push({ln,lw});
+  const lh=fs*1.15,cy=H*(vert?.74:.86)-(lines.length-1)*lh/2,k=.75+.25*Math.min(1,(t-c.t)/.15);
+  x.save();x.translate(W/2,cy);x.scale(k,k);x.translate(-W/2,-cy);
+  lines.forEach((L,i)=>{
+    let px=(W-L.lw)/2;const py=cy+i*lh;
+    if(st==='s3'){x.fillStyle='rgba(0,0,0,.75)';x.fillRect(px-fs*.3,py-lh/2,L.lw+fs*.6,lh)}
+    L.ln.forEach(w=>{
+      x.save();
+      if(st==='s1'){x.lineWidth=fs*.16;x.lineJoin='round';x.strokeStyle='#000';x.strokeText(w.s,px,py)}
+      if(st==='s2'){x.shadowColor=w.h?'#ff3df2':'#00e5ff';x.shadowBlur=fs*.5}
+      x.fillStyle=w.h?HL[st]:'#fff';x.fillText(w.s,px,py);x.restore();px+=w.w+sp;
+    });
+  });
+  x.restore();
+}
+function frame(){
+  if(loaded&&v.videoWidth){
+    const t=v.currentTime,[a,b]=range();
+    x.fillStyle='#000';x.fillRect(0,0,W,H);
+    const s=Math.max(W/v.videoWidth,H/v.videoHeight),dw=v.videoWidth*s,dh=v.videoHeight*s;
+    x.drawImage(v,(W-dw)/2,(H-dh)/2,dw,dh);
+    const c=cues.find(c=>t>=c.t&&t<c.e);if(c)drawCap(c,t);
+    $('now').textContent=fmt(t)+' / '+fmt(v.duration);
+    if(document.activeElement!==$('sl'))$('sl').value=t;
+    if(prev&&t>=b)v.currentTime=a;
+    if(exporting){
+      say('Grabando… '+Math.min(100,Math.round((t-a)/(b-a)*100))+'%');
+      if(t>=b||v.ended){exporting=false;v.pause();REC.stop()}
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+function parseTr(txt){
+  const L=txt.split(/\n/).map(s=>s.trim()).filter(Boolean),out=[],isT=s=>/^\d{1,2}(:\d{2}){1,2}(\s|$)/.test(s);
+  for(let i=0;i<L.length;i++){
+    const m=L[i].match(/^(\d{1,2}(?::\d{2}){1,2})\s*(.*)$/);
+    if(m){let z=m[2];if(!z&&L[i+1]&&!isT(L[i+1]))z=L[++i];if(z)out.push({t:toS(m[1]),x:z})}
+  }
+  return out;
+}
+function catchy(s){
+  const w=s.split(/\s+/).slice(0,8);let bi=0;w.forEach((z,i)=>{if(z.length>w[bi].length)bi=i});
+  if(w[bi]&&w[bi].length>3)w[bi]='*'+w[bi]+'*';return w.join(' ');
+}
+async function aiRewrite(lines){
+  const key=$('key').value.trim();if(!key)return null;
+  const p='Eres editor de clips virales para TikTok/Reels. Reescribe cada línea numerada como un subtítulo corto y llamativo: máximo 6 palabras, mismo idioma que el original, fiel a lo que se dice, con máximo 1 emoji, y envuelve la palabra más impactante entre *asteriscos*. Responde SOLO con un arreglo JSON de strings, en el mismo orden y con exactamente '+lines.length+' elementos.\n\n'+lines.map((l,i)=>(i+1)+'. '+l).join('\n');
+  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-5',max_tokens:2000,messages:[{role:'user',content:p}]})});
+  const j=await r.json();if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  const o=JSON.parse(j.content.map(i=>i.text||'').join('').replace(/```json|```/g,'').trim());
+  return Array.isArray(o)&&o.length===lines.length?o.map(String):null;
+}
+$('gen').onclick=async()=>{
+  if(!loaded)return say('Primero sube un video.');
+  const[a,b]=range();if(!(b>a))return say('El fin debe ser mayor que el inicio.');
+  const txt=$('tr').value;let segs=parseTr(txt).filter(s=>s.t>=a-1&&s.t<b);
+  if(!segs.length){
+    const L=txt.split(/\n/).map(s=>s.trim()).filter(z=>z&&!/^\d{1,2}(:\d{2}){1,2}$/.test(z));
+    if(!L.length)return say('Pega el texto de lo que se dice en el clip.');
+    segs=L.map((z,i)=>({t:a+i*(b-a)/L.length,x:z}));
+  }
+  $('gen').disabled=true;say('Generando subtítulos…');
+  let out=null;
+  try{out=await aiRewrite(segs.map(s=>s.x))}catch(e){say('No pude usar la IA ('+e.message+'). Uso el texto original.')}
+  cues=segs.map((s,i)=>({t:Math.max(s.t,a),e:segs[i+1]?segs[i+1].t:b,x:out?out[i]:catchy(s.x)}));
+  if(out)say('Listo: '+cues.length+' subtítulos con IA. Pulsa «Previsualizar clip».');else if(!$('key').value.trim())say('Listo: '+cues.length+' subtítulos (sin IA, texto original).');
+  $('gen').disabled=false;
+};
+const ts=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60),z=Math.floor(s%60);return[h,m,z].map(n=>String(n).padStart(2,'0')).join(':')+','+String(Math.round(s%1*1000)).padStart(3,'0')};
+$('srt').onclick=()=>{
+  if(!cues.length)return say('Aún no hay subtítulos.');
+  const a0=cues[0].t,txt=cues.map((c,i)=>(i+1)+'\n'+ts(c.t-a0)+' --> '+ts(c.e-a0)+'\n'+c.x.replace(/\*/g,'')+'\n').join('\n');
+  const l=document.createElement('a');l.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));l.download='subtitulos.srt';l.click();
+};
+$('exp').onclick=async()=>{
+  if(!loaded)return say('Primero sube un video.');
+  const[a,b]=range();if(!(b>a))return say('Revisa inicio y fin.');
+  if(!window.MediaRecorder)return say('Tu navegador no soporta grabación. Usa Chrome, Edge o Safari actualizado.');
+  prev=false;v.pause();await seek(a);
+  try{
+    if(!AC){AC=new AudioContext();SRC=AC.createMediaElementSource(v);DST=AC.createMediaStreamDestination();GN=AC.createGain();SRC.connect(DST);SRC.connect(GN);GN.connect(AC.destination)}
+    await AC.resume();GN.gain.value=0;
+  }catch(e){say('No pude capturar el audio; exporto sin sonido.')}
+  const st=cv.captureStream(30);if(DST)DST.stream.getAudioTracks().forEach(t=>st.addTrack(t));
+  const mt=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(m=>MediaRecorder.isTypeSupported(m));
+  const ch=[];REC=new MediaRecorder(st,mt?{mimeType:mt,videoBitsPerSecond:6e6}:{});
+  REC.ondataavailable=e=>e.data.size&&ch.push(e.data);
+  REC.onstop=()=>{
+    if(GN)GN.gain.value=1;
+    const type=REC.mimeType||mt||'video/webm',blob=new Blob(ch,{type}),u=URL.createObjectURL(blob);
+    $('out').src=u;$('out').hidden=false;$('dlk').href=u;$('dlk').download='clip.'+(type.includes('mp4')?'mp4':'webm');$('dlk').hidden=false;
+    say('¡Listo! Tu clip está abajo y puedes descargarlo.');
+  };
+  $('dlk').hidden=true;exporting=true;REC.start();v.play();
+};
+</script>
+</body>
+</html>
